@@ -1,0 +1,37 @@
+﻿@page "/"
+@using System.Text.Json
+@using Nabla_Test.Services
+@inject AmendAudioRecorderService RecorderService
+@inject Microsoft.JSInterop.IJSRuntime JSRuntime
+
+<h3>Real-Time Transcription</h3>
+
+<button @onclick="StartRecording">Start</button>
+<button @onclick="StopRecording">Stop</button>
+<textarea id="transcriptionTextArea" style="width:100%; height:200px;" readonly></textarea>
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        RecorderService.TranscriptionReceived += (sender, transcription) =>
+        {
+            UpdateTranscription(transcription);
+        };
+    }
+
+    private async Task StartRecording()
+    {
+        await RecorderService.StartRecording();
+    }
+
+    private async Task StopRecording()
+    {
+        await RecorderService.StopRecording();
+    }
+
+    private void UpdateTranscription(string transcription)
+    {
+        var js = (IJSInProcessRuntime)JSRuntime;
+        js.InvokeVoid("updateTranscription", transcription);
+    }
+}

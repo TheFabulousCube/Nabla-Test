@@ -1,0 +1,123 @@
+﻿<!-- MainPage.razor -->
+@page "/"
+@using System.Net.WebSockets
+@using Plugin.Maui.Audio
+@using System.Text.Json
+@inject IJSRuntime JS
+@implements IDisposable
+
+<h3>Real-Time Transcription</h3>
+
+<button @onclick="StartRecording">Start Recording</button>
+<textarea @bind="Transcription" rows="10" cols="50" readonly></textarea>
+
+@code {
+    private ClientWebSocket _webSocket;
+    private IAudioManager _audioManager;
+    private IAudioRecorder _audioRecorder;
+    private string Transcription { get; set; } = string.Empty; 
+    private const string NablaEndpoint = "wss://api.nabla.com/v1/copilot-api/server/listen-ws";
+    private string _authToken = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZXJ2ZXJfQ3ZVN3hnRjVnUmhPIiwiY2xvdWRfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJpc3MiOiJwcm9kOnNlcnZlcjp0aGVmYWJ1bG91c2N1YmUtZjdiOWNiOSIsInR5cCI6InNlcnZlcl9rZXkiLCJuYWJsYV9yZWdpb24iOiJ1cyIsImV4cCI6MjE0NzQ3MjAwMCwib3JnYW5pemF0aW9uU3RyaW5nSWQiOiJ0aGVmYWJ1bG91c2N1YmUtZjdiOWNiOSJ9.XZl5T0mLMFkL-bjANsnevB1N1vVFsH9Nl13muCnggQM"; // Replace with your API key
+    private string _streamId = "unique_stream_id"; // Replace with a unique stream ID
+    private CancellationTokenSource _cancellationTokenSource;
+    private string _websocketProtocol = "copilot-listen-protocol";
+    private const int ChunkSizeMs = 100;
+    private byte[] _buffer = new byte[4096]; // Adjust buffer size as needed
+
+
+    protected override async Task OnInitializedAsync()
+    {
+        _audioManager = AudioManager.Current;
+        _audioRecorder = _audioManager.CreateRecorder();
+        _webSocket = new ClientWebSocket();
+        await _webSocket.ConnectAsync(new Uri(NablaEndpoint), CancellationToken.None);
+    }
+
+    private async Task StartRecording()
+    {
+        // Initialize WebSocket connection
+        _webSocket = new ClientWebSocket();
+        _webSocket.Options.SetRequestHeader("Authorization", $"Bearer {_authToken}");
+        _webSocket.Options.AddSubProtocol(_websocketProtocol);
+        await _webSocket.ConnectAsync(new Uri(NablaEndpoint), _cancellationTokenSource.Token);
+
+        // Send listen configuration
+        var listenConfig = new
+        {
+            obj = "listen_config",
+            output_objects = new[] { "transcript_item" },
+            encoding = "pcm_s16le",
+            sample_rate = 16000,
+            language = "en-US",
+            streams = new[]
+            {
+                new { id = _streamId, speaker_type = "unspecified" }
+            }
+        };
+        var configMessage = JsonSerializer.Serialize(listenConfig);
+        await _webSocket.SendAsync(new ArraySegment<byte>(System.Text.Encoding.UTF8.GetBytes(configMessage)), WebSocketMessageType.Text, true, _cancellationTokenSource.Token);
+
+        if (_audioRecorder.CanRecordAudio)
+        {
+            await _audioRecorder.StartAsync();
+
+            var sendTask = SendAudioDataAsync();
+            var receiveTask = ReceiveTranscriptionAsync();
+
+            await Task.WhenAll(sendTask, receiveTask);
+        }
+        else
+        {
+            // Handle the case where the device cannot record audio
+            Console.WriteLine("This device cannot record audio.");
+        }
+    }
+
+    private async Task SendAudioDataAsync()
+    {
+        while (_audioRecorder.IsRecording)
+        {
+            var audioData = await ReadAudioDataAsync();
+            if (audioData != null)
+            {
+                var buffer = new ArraySegment<byte>(audioData);
+                await _webSocket.SendAsync(buffer, WebSocketMessageType.Binary, true, CancellationToken.None);
+            }
+        }
+    }
+
+    private async Task<byte[]> ReadAudioDataAsync()
+    {
+        // Implement logic to read audio data from the recorded file
+        // Since Plugin.Maui.Audio records audio to a file, you will need to read the file incrementally
+        // This example assumes you have a method to read the file and return byte array chunks
+        // Example: return await File.ReadAllBytesAsync("path_to_recorded_file");
+
+        // Placeholder for actual implementation
+        return null;
+    }
+
+    private async Task ReceiveTranscriptionAsync()
+    {
+        while (_webSocket.State == WebSocketState.Open)
+        {
+            var buffer = new byte[8192];
+            var result = await _webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+            if (result.MessageType == WebSocketMessageType.Text)
+            {
+                string transcription = System.Text.Encoding.UTF8.GetString(buffer, 0, result.Count);
+                await JS.InvokeVoidAsync("Blazor.updateTranscription", transcription);
+            }
+            else if (result.MessageType == WebSocketMessageType.Close)
+            {
+                await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed by client", CancellationToken.None);
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _audioRecorder?.StopAsync();
+        _webSocket?.Dispose();
+    }
+}

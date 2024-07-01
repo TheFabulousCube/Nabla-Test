@@ -1,0 +1,73 @@
+﻿@page "/counter"
+@using System.Net.WebSockets
+@using System.Text
+@using System.Threading.Tasks
+@using Nabla_Test.Services
+@inject AudioRecorderService RecorderService
+@inject NavigationManager Navigation
+@inject IJSRuntime JSRuntime
+
+<h3>Real-Time Transcription</h3>
+
+<button @onclick="StartRecording">Start</button>
+<button @onclick="StopRecording">Stop</button>
+<textarea id="transcriptionTextArea" style="width:100%; height:200px;" readonly></textarea>
+
+@code {
+    private ClientWebSocket? webSocket;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+        RecorderService.AudioChunkAvailable += async (sender, chunk) =>
+        {
+            await SendAudioChunk(chunk);
+        };
+    }
+
+    private async Task StartRecording()
+    {
+        await RecorderService.StartRecording();
+        await InitializeWebSocket();
+    }
+
+    private void StopRecording()
+    {
+        RecorderService.StopRecording();
+    }
+
+    private async Task InitializeWebSocket()
+    {
+        webSocket = new ClientWebSocket();
+        webSocket.Options.SetRequestHeader("Authorization", "Bearer YOUR_SERVER_API_KEY");
+        webSocket.Options.AddSubProtocol("copilot-listen-protocol");
+        await webSocket.ConnectAsync(new Uri("wss://api.nabla.com/transcription"), CancellationToken.None);
+        await ReceiveTranscriptions();
+    }
+
+    private async Task SendAudioChunk(byte[] chunk)
+    {
+        if (webSocket?.State == WebSocketState.Open)
+        {
+            await webSocket.SendAsync(new ArraySegment<byte>(chunk), WebSocketMessageType.Binary, true, CancellationToken.None);
+        }
+    }
+
+    private async Task ReceiveTranscriptions()
+    {
+        var buffer = new byte[1024 * 4];
+
+        while (webSocket?.State == WebSocketState.Open)
+        {
+            var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+            var transcription = Encoding.UTF8.GetString(buffer, 0, result.Count);
+            UpdateTranscription(transcription);
+        }
+    }
+
+    private void UpdateTranscription(string transcription)
+    {
+        var js = (IJSInProcessRuntime)JSRuntime;
+        js.InvokeVoid("updateTranscription", transcription);
+    }
+}
